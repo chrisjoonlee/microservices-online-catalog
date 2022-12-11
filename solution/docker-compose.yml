@@ -1,0 +1,130 @@
+version: '3.8'
+
+services:
+
+  catalog-management:
+    build:
+      context: ./backend/catalog-management
+      target: dev # Targets only the dev build in that Dockerfile
+    ports:
+      - ${BACKEND_CATALOG_MANAGEMENT_PORT}:${BACKEND_CATALOG_MANAGEMENT_PORT}
+    volumes:
+      # Bind Mount: Automatically updates edits to the files on the
+      # host system
+      # Must use nodemon in the Dockerfile
+      # delegated flag ensures optimal performance for Macs
+      - ./backend/catalog-management:/app:delegated
+      # Anonymous volume: Prevents the bind mount from using the
+      # node_modules folder on the host file system
+      - /app/node_modules
+    environment:
+      - PORT=${BACKEND_CATALOG_MANAGEMENT_PORT}
+
+  customer-support:
+    build:
+      context: ./backend/customer-support
+      target: dev
+    ports:
+      - ${BACKEND_CUSTOMER_SUPPORT_PORT}:${BACKEND_CUSTOMER_SUPPORT_PORT}
+    networks:
+      default:
+      customer-support:
+    volumes:
+      - ./backend/customer-support:/app:delegated
+      - /app/node_modules
+    environment:
+      - PORT=${BACKEND_CUSTOMER_SUPPORT_PORT}
+      - DB_USERNAME=${BACKEND_CUSTOMER_SUPPORT_DB_USERNAME}
+      - DB_PASSWORD=${BACKEND_CUSTOMER_SUPPORT_DB_PASSWORD}
+      - DB_DATABASE=${BACKEND_CUSTOMER_SUPPORT_DB_DATABASE}
+      - DB_HOST=customer-support-db
+      # ORDER_PROCESSING_BASE_RUL used to specify the base URL for the
+      # order-processing microservice API, which is used in the app.js
+      # file to retrieve each customer's orders
+      - ORDER_PROCESSING_BASE_URL=http://order-processing:${BACKEND_ORDER_PROCESSING_PORT}
+    depends_on:
+      - customer-support-db
+    command: ./wait-for customer-support-db:5432 -- npm run db-migrate-seed
+
+  customer-support-db:
+    image: postgres:12.3
+    environment:
+      - POSTGRES_USER=${BACKEND_CUSTOMER_SUPPORT_DB_USERNAME}
+      - POSTGRES_PASSWORD=${BACKEND_CUSTOMER_SUPPORT_DB_PASSWORD}
+      - POSTGRES_DB=${BACKEND_CUSTOMER_SUPPORT_DB_DATABASE}
+    # Not adding to the db to the default network prevents other
+    # microservices from being able to access it
+    networks:
+      customer-support:
+    volumes:
+      - customer-support-db-data:/var/lib/postgresql/data
+
+  order-processing:
+    build:
+      context: ./backend/order-processing
+      target: dev
+    # No ports because the client-side UI doesn't access this service
+    # directly. Other microservices have access to the service on the
+    # default network configured by Compose
+    networks:
+      default:
+      order-processing:
+    volumes:
+      - ./backend/order-processing:/app:delegated
+      - /app/node_modules
+    environment:
+      - PORT=${BACKEND_ORDER_PROCESSING_PORT}
+      - DB_USERNAME=${BACKEND_ORDER_PROCESSING_DB_USERNAME}
+      - DB_PASSWORD=${BACKEND_ORDER_PROCESSING_DB_PASSWORD}
+      - DB_DATABASE=${BACKEND_ORDER_PROCESSING_DB_DATABASE}
+      - DB_HOST=order-processing-db
+    depends_on:
+      - order-processing-db
+    # depends_on only causes Compose to wait until the other container
+    # has been started, not when it's truly ready. To know when to start
+    # seeding and migrating data, you can use a wait-for script.
+    # The command executes when Compose starts up the container
+    command: ./wait-for order-processing-db:5432 -- npm run db-migrate-seed
+
+  order-processing-db:
+    image: postgres:12.3
+    environment:
+      - POSTGRES_USER=${BACKEND_ORDER_PROCESSING_DB_USERNAME}
+      - POSTGRES_PASSWORD=${BACKEND_ORDER_PROCESSING_DB_PASSWORD}
+      - POSTGRES_DB=${BACKEND_ORDER_PROCESSING_DB_DATABASE}
+    networks:
+      order-processing:
+    volumes:
+      # Maps the container path at /var... to the named volume
+      - order-processing-db-data:/var/lib/postgresql/data
+
+  frontend:
+    build:
+      context: ./frontend
+      target: dev
+    volumes:
+      - ./frontend:/app:delegated
+      - /app/node_modules
+    ports:
+      - ${FRONTEND_PORT}:3000
+    environment:
+      - REACT_APP_CATALOG_MANAGEMENT_BASE_URL=http://localhost:${BACKEND_CATALOG_MANAGEMENT_PORT}
+      - REACT_APP_CUSTOMER_SUPPORT_BASE_URL=http://localhost:${BACKEND_CUSTOMER_SUPPORT_PORT}
+    # Keeps the container from exiting after it's been started, e.g.
+    # while using Create React App tooling. Allows editing in real time
+    stdin_open: true
+    depends_on:
+      - catalog-management
+      - customer-support
+
+# Set up custom networks so that database services are only accessible
+# by their respective application services
+networks:
+  customer-support:
+    driver: bridge
+  order-processing:
+    driver: bridge
+
+volumes:
+  customer-support-db-data:
+  order-processing-db-data:
